@@ -1,10 +1,22 @@
-import { useState } from 'react';
+import { useState, useEffect } from 'react';
 import { Tabs, TabsContent, TabsList, TabsTrigger } from './components/ui/tabs';
 import { ShiftCalendar } from './components/ShiftCalendar';
 import { TaskTable } from './components/TaskTable';
-import { Calendar, ClipboardList } from 'lucide-react';
+import { Calendar } from 'lucide-react';
+import { 
+  getShiftRegistrations, 
+  toggleShiftRegistration,
+  subscribeToShiftRegistrations 
+} from './services/shiftRegistrations';
+import { 
+  getTasks, 
+  createTask, 
+  updateTask as updateTaskService, 
+  deleteTask as deleteTaskService,
+  subscribeToTasks 
+} from './services/tasks';
 
-// Mock data types
+// Data types
 export type ShiftType = 'Morning' | 'Afternoon';
 export type TaskStatus = 'not started' | 'in progress' | 'completed';
 
@@ -57,59 +69,103 @@ export default function App() {
   const [activeTab, setActiveTab] = useState(`week${Math.min(currentWeekNumber, 10)}`);
   
   const [shiftRegistrations, setShiftRegistrations] = useState<ShiftRegistration[]>([]);
-
   const [tasks, setTasks] = useState<Task[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState<string | null>(null);
 
-  const addShiftRegistration = (date: string, shift: ShiftType, userName: string) => {
-    setShiftRegistrations(prev => {
-      const existing = prev.find(r => r.date === date && r.shift === shift);
-      
-      if (existing) {
-        if (existing.users.includes(userName)) {
-          // Unregister user
-          const newUsers = existing.users.filter(u => u !== userName);
-          if (newUsers.length === 0) {
-            return prev.filter(r => !(r.date === date && r.shift === shift));
-          }
-          return prev.map(r => 
-            r.date === date && r.shift === shift 
-              ? { ...r, users: newUsers }
-              : r
-          );
-        } else {
-          // Register user if not full
-          if (existing.users.length < 2) {
-            return prev.map(r => 
-              r.date === date && r.shift === shift 
-                ? { ...r, users: [...r.users, userName] }
-                : r
-            );
-          }
-          return prev;
-        }
-      } else {
-        // Create new registration
-        return [...prev, { date, shift, users: [userName] }];
+  // Load initial data
+  useEffect(() => {
+    async function loadData() {
+      try {
+        setLoading(true);
+        setError(null);
+        const [registrations, tasksData] = await Promise.all([
+          getShiftRegistrations(),
+          getTasks()
+        ]);
+        setShiftRegistrations(registrations);
+        setTasks(tasksData);
+      } catch (err) {
+        console.error('Error loading data:', err);
+        setError(err instanceof Error ? err.message : 'Failed to load data');
+      } finally {
+        setLoading(false);
       }
+    }
+    
+    loadData();
+  }, []);
+
+  // Subscribe to real-time updates
+  useEffect(() => {
+    const unsubscribeRegistrations = subscribeToShiftRegistrations((registrations) => {
+      setShiftRegistrations(registrations);
     });
-  };
 
-  const updateTask = (taskId: string, updates: Partial<Task>) => {
-    setTasks(prev => prev.map(task => 
-      task.id === taskId ? { ...task, ...updates } : task
-    ));
-  };
+    const unsubscribeTasks = subscribeToTasks((tasks) => {
+      setTasks(tasks);
+    });
 
-  const addTask = (task: Omit<Task, 'id'>) => {
-    const newTask: Task = {
-      ...task,
-      id: Date.now().toString()
+    return () => {
+      unsubscribeRegistrations();
+      unsubscribeTasks();
     };
-    setTasks(prev => [...prev, newTask]);
+  }, []);
+
+  const addShiftRegistration = async (date: string, shift: ShiftType, userName: string) => {
+    try {
+      setError(null);
+      await toggleShiftRegistration(date, shift, userName);
+      // Real-time subscription will update the state automatically
+    } catch (err) {
+      console.error('Error toggling shift registration:', err);
+      setError(err instanceof Error ? err.message : 'Failed to update shift registration');
+      // Re-fetch on error to ensure consistency
+      const registrations = await getShiftRegistrations();
+      setShiftRegistrations(registrations);
+    }
   };
 
-  const deleteTask = (taskId: string) => {
-    setTasks(prev => prev.filter(task => task.id !== taskId));
+  const updateTask = async (taskId: string, updates: Partial<Task>) => {
+    try {
+      setError(null);
+      await updateTaskService(taskId, updates);
+      // Real-time subscription will update the state automatically
+    } catch (err) {
+      console.error('Error updating task:', err);
+      setError(err instanceof Error ? err.message : 'Failed to update task');
+      // Re-fetch on error to ensure consistency
+      const tasksData = await getTasks();
+      setTasks(tasksData);
+    }
+  };
+
+  const addTask = async (task: Omit<Task, 'id'>) => {
+    try {
+      setError(null);
+      await createTask(task);
+      // Real-time subscription will update the state automatically
+    } catch (err) {
+      console.error('Error creating task:', err);
+      setError(err instanceof Error ? err.message : 'Failed to create task');
+      // Re-fetch on error to ensure consistency
+      const tasksData = await getTasks();
+      setTasks(tasksData);
+    }
+  };
+
+  const deleteTask = async (taskId: string) => {
+    try {
+      setError(null);
+      await deleteTaskService(taskId);
+      // Real-time subscription will update the state automatically
+    } catch (err) {
+      console.error('Error deleting task:', err);
+      setError(err instanceof Error ? err.message : 'Failed to delete task');
+      // Re-fetch on error to ensure consistency
+      const tasksData = await getTasks();
+      setTasks(tasksData);
+    }
   };
   
   // Generate week dates
@@ -123,12 +179,28 @@ export default function App() {
     };
   });
 
+  if (loading) {
+    return (
+      <div className="min-h-screen bg-gradient-to-br from-slate-50 via-cyan-50 to-blue-50 p-4 md:p-8 flex items-center justify-center">
+        <div className="text-center">
+          <div className="animate-spin rounded-full h-12 w-12 border-b-2 border-cyan-600 mx-auto mb-4"></div>
+          <p className="text-slate-600">Loading...</p>
+        </div>
+      </div>
+    );
+  }
+
   return (
     <div className="min-h-screen bg-gradient-to-br from-slate-50 via-cyan-50 to-blue-50 p-4 md:p-8">
       <div className="max-w-7xl mx-auto space-y-6">
         <header className="mb-8">
           <h1 className="text-slate-900 mb-2">Shift Registration System</h1>
           <p className="text-slate-600">Register for your shifts and manage tasks collaboratively.</p>
+          {error && (
+            <div className="mt-4 p-3 bg-red-100 border border-red-400 text-red-700 rounded">
+              Error: {error}
+            </div>
+          )}
         </header>
 
         <Tabs value={activeTab} onValueChange={setActiveTab} className="space-y-6">
